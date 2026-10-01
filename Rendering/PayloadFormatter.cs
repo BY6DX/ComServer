@@ -17,9 +17,6 @@ public static class PayloadFormatter
 {
     private const string HexDigits = "0123456789ABCDEF";
 
-    /// <summary>HEX 模式每行显示的字节数，超出后换行并缩进对齐。</summary>
-    public const int HexBytesPerLine = 16;
-
     public static string Format(ReadOnlySpan<byte> data, PayloadDisplayMode mode, Encoding? encoding = null)
         => mode == PayloadDisplayMode.Hex ? ToHex(data) : ToText(data, encoding);
 
@@ -51,26 +48,12 @@ public static class PayloadFormatter
     }
 
     /// <summary>
-    /// 按指定编码解码为文本，并把控制字符替换成 <c>.</c>，
-    /// 保证一条记录始终占据日志中的一行，便于对齐时间戳与前缀。
+    /// 按指定编码解码为文本。
+    /// 这里不做任何换行归一化或控制符过滤：渲染前的处理统一交给
+    /// <see cref="AnsiParser"/>，避免同一份文本被处理两次。
     /// </summary>
     public static string ToText(ReadOnlySpan<byte> data, Encoding? encoding = null)
-    {
-        if (data.IsEmpty)
-        {
-            return string.Empty;
-        }
-
-        var decoded = (encoding ?? Encoding.UTF8).GetString(data);
-        var builder = new StringBuilder(decoded.Length);
-
-        foreach (var ch in decoded)
-        {
-            builder.Append(char.IsControl(ch) ? '.' : ch);
-        }
-
-        return builder.ToString();
-    }
+        => data.IsEmpty ? string.Empty : (encoding ?? Encoding.UTF8).GetString(data);
 
     /// <summary>
     /// 解析用户输入的 HEX 字符串。允许空格、逗号、冒号、短横线、换行以及 <c>0x</c> 前缀。

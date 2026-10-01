@@ -25,11 +25,22 @@ public partial class Form1 : Form
     private const int LogDrainIntervalMs = 50;
     private const int StatsIntervalMs = 250;
 
+    /// <summary>
+    /// “半行”停留多久后先行显示（针对结尾不带换行的输出，如登录提示符）。
+    /// 值太小会把慢速设备的分片切成两行，太大则交互提示迟迟不出现。
+    /// </summary>
+    private static readonly TimeSpan PartialLineIdle = TimeSpan.FromMilliseconds(300);
+
     private readonly SerialPortService _serial = new();
     private readonly TcpServerService _server = new();
     private readonly ConcurrentQueue<LogEntry> _pendingLogs = new();
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _statsTimer = new();
+
+    // 串口与每个 TCP 客户端各一个行组装器：串口 / 网络的分片边界是任意的，
+    // 先拼回完整的行，日志才不会“半行一行”。
+    private readonly LineAssembler _serialLines = new();
+    private readonly ConcurrentDictionary<int, LineAssembler> _clientLines = new();
 
     private LogView _logView = null!;
     private readonly Encoding _sendEncoding = new UTF8Encoding(false);
@@ -54,7 +65,11 @@ public partial class Form1 : Form
         _logTimer.Tick += (_, _) => DrainLogQueue();
 
         _statsTimer.Interval = StatsIntervalMs;
-        _statsTimer.Tick += (_, _) => UpdateStatus();
+        _statsTimer.Tick += (_, _) =>
+        {
+            FlushIdleLines();
+            UpdateStatus();
+        };
     }
 
     #region 初始化
@@ -147,6 +162,7 @@ public partial class Form1 : Form
         {
             _logTimer.Dispose();
             _statsTimer.Dispose();
+            _logView.Dispose();
         };
     }
 
@@ -154,19 +170,31 @@ public partial class Form1 : Form
 
     #region 串口 / TCP 事件（后台线程）
 
-    /// <summary>串口 → TCP：广播给所有客户端。</summary>
+    /// <summary>串口 → TCP：广播给所有客户端（字节原样转发，日志按行显示）。</summary>
     private void OnSerialData(byte[] data)
     {
-        Enqueue(new LogEntry(DateTime.Now, LogDirection.Rx, data));
         Interlocked.Add(ref _rxBytes, data.Length);
+
+        // 转发用原始分片，不影响任何字节。
         _server.Broadcast(data);
+
+        foreach (var line in _serialLines.Feed(data))
+        {
+            Enqueue(new LogEntry(DateTime.Now, LogDirection.Rx, line));
+        }
     }
 
     /// <summary>TCP → 串口：写入串口发送队列（等待入队，天然形成背压）。</summary>
     private async ValueTask OnTcpData(int clientId, byte[] data)
     {
-        Enqueue(new LogEntry(DateTime.Now, LogDirection.Tx, data, $"#{clientId}"));
         Interlocked.Add(ref _txBytes, data.Length);
+
+        var lines = _clientLines.GetOrAdd(clientId, _ => new LineAssembler());
+        foreach (var line in lines.Feed(data))
+        {
+            Enqueue(new LogEntry(DateTime.Now, LogDirection.Tx, line, $"#{clientId}"));
+        }
+
         await _serial.SendAsync(data).ConfigureAwait(false);
     }
 
@@ -179,6 +207,17 @@ public partial class Form1 : Form
     private void OnClientDisconnected(int id, string remote)
     {
         Interlocked.Decrement(ref _clientCount);
+
+        // 连接结束时把最后一段没有换行的输出补上，避免日志丢掉尾巴。
+        if (_clientLines.TryRemove(id, out var assembler))
+        {
+            var remaining = assembler.TakeRemaining();
+            if (remaining is { Length: > 0 })
+            {
+                Enqueue(new LogEntry(DateTime.Now, LogDirection.Tx, remaining, $"#{id}"));
+            }
+        }
+
         Enqueue(LogEntry.System(DateTime.Now, $"客户端 #{id} 已断开（{remote}）"));
     }
 
@@ -192,6 +231,30 @@ public partial class Form1 : Form
                 await StopServerAsync();
             }
         });
+    }
+
+    /// <summary>
+    /// 冲刷停留过久的“半行”。像登录提示符这种结尾不带换行的输出，
+    /// 如果死等换行符就会一直显示不出来。
+    /// </summary>
+    private void FlushIdleLines()
+    {
+        var now = DateTime.Now;
+
+        var serial = _serialLines.TakeIdle(PartialLineIdle, now);
+        if (serial is { Length: > 0 })
+        {
+            Enqueue(new LogEntry(now, LogDirection.Rx, serial));
+        }
+
+        foreach (var (clientId, assembler) in _clientLines)
+        {
+            var pending = assembler.TakeIdle(PartialLineIdle, now);
+            if (pending is { Length: > 0 })
+            {
+                Enqueue(new LogEntry(now, LogDirection.Tx, pending, $"#{clientId}"));
+            }
+        }
     }
 
     #endregion
@@ -242,6 +305,9 @@ public partial class Form1 : Form
             _clientCount = 0;
             _running = true;
 
+            _serialLines.Clear();
+            _clientLines.Clear();
+
             SetConfigurationEnabled(false);
             _startButton.Text = "停止";
             _endpointHint = DescribeLocalAddresses();
@@ -290,6 +356,13 @@ public partial class Form1 : Form
             _startButton.Text = "启动";
             _startButton.Enabled = true;
             SetConfigurationEnabled(true);
+
+            var leftover = _serialLines.TakeRemaining();
+            if (leftover is { Length: > 0 })
+            {
+                Enqueue(new LogEntry(DateTime.Now, LogDirection.Rx, leftover));
+            }
+
             Enqueue(LogEntry.System(DateTime.Now, "服务已停止。"));
             UpdateStatus();
         }

@@ -254,7 +254,7 @@ partial class Form1
         _connectionGroup.TabStop = false;
         _connectionGroup.Text = "连接配置";
 
-        // _logBox —— 只读、等宽、不自动换行（一条转发记录固定占一行）。
+        // _logBox —— 只读、等宽；长内容在抵达控件宽度后自动换行，不主动截断。
         _logBox.BackColor = Color.White;
         _logBox.BorderStyle = BorderStyle.FixedSingle;
         _logBox.Dock = DockStyle.Fill;
@@ -268,7 +268,7 @@ partial class Form1
         _logBox.Size = new Size(1124, 300);
         _logBox.TabIndex = 1;
         _logBox.Text = "";
-        _logBox.WordWrap = false;
+        _logBox.WordWrap = true;
 
         // _logToolbar —— 日志显示选项。
         _logToolbar.AutoSize = true;
