@@ -1,0 +1,52 @@
+name: Publish Desktop App from Pre-release
+
+on:
+  release:
+    types: [prereleased]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    if: ${{ github.event.release.prerelease == true }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish self-contained single-file app
+        run: >-
+          dotnet publish ComServer.csproj
+          -c Release
+          -r win-x64
+          /p:SelfContained=true
+          /p:PublishSingleFile=true
+          -o publish
+
+      - name: Resolve single-file exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path publish -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "No exe found in publish output." }
+          "ASSET_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload asset to release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET_PATH }}" --clobber
+
+      - name: Convert to full release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release edit "${{ github.event.release.tag_name }}" --prerelease=false
