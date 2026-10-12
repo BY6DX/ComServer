@@ -32,19 +32,18 @@ jobs:
           /p:PublishSingleFile=true
           -o publish
 
-      - name: Package published files
+      - name: Resolve single-file exe
         shell: pwsh
         run: |
-          $tag = '${{ github.event.release.tag_name }}'
-          $asset = "ComServer-$tag-win-x64-selfcontained.zip"
-          Compress-Archive -Path publish\* -DestinationPath $asset -Force
-          "ASSET_NAME=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $exe = Get-ChildItem -Path publish -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "No exe found in publish output." }
+          "ASSET_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload asset to release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET_NAME }}" --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET_PATH }}" --clobber
 
       - name: Convert to full release
         env:
